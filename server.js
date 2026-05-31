@@ -16,12 +16,32 @@ const rooms = {};
 io.on('connection', (socket) => {
     console.log(`Spieler verbunden: ${socket.id}`);
 
-    socket.on('createRoom', (roomCode) => {
-        rooms[roomCode] = { players: [socket.id] };
-        socket.join(roomCode);
-        console.log(`Lobby ${roomCode} erstellt.`);
-    });
+   // 1. RAUM ERSTELLEN (Das steht schon bei dir drin)
+socket.on('createRoom', (roomCode) => {
+    rooms[roomCode] = { players: [socket.id] };
+    socket.join(roomCode);
+    console.log(`Lobby ${roomCode} erstellt durch Spieler ${socket.id}.`);
+});
 
+// 2. RAUM BEITRETEN (Hier senden wir jetzt die IDs mit!)
+socket.on('joinRoom', (roomCode) => {
+    if (rooms[roomCode]) {
+        rooms[roomCode].players.push(socket.id);
+        socket.join(roomCode);
+        console.log(`Spieler ${socket.id} ist Lobby ${roomCode} beigetreten.`);
+        
+        // Sobald der zweite Spieler da ist, starten wir das Match
+        if (rooms[roomCode].players.length === 2) {
+            io.to(roomCode).emit('matchStart', {
+                player1: rooms[roomCode].players[0], // ID vom Ersteller
+                player2: rooms[roomCode].players[1]  // ID vom Beitretenden
+            });
+            console.log(`Match in Lobby ${roomCode} gestartet! IDs wurden gesendet.`);
+        }
+    } else {
+        socket.emit('errorMsg', 'Lobby nicht gefunden!');
+    }
+});
     // ==========================================
 // MULTIPLAYER: GEGNER ZEICHNEN BEI MATCHSTART
 // ==========================================
