@@ -1,90 +1,144 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const sqlite3 = require("sqlite3").verbose();
+const bcrypt = require("bcrypt");
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { 
-    cors: { 
-        origin: "*" 
-    },
-    transports: ["websocket"] // <--- DIESE ZEILE MUSS HIER REIN!
+app.use(express.json());
+
+const httpServer = http.createServer(app);
+
+const io = new Server(httpServer, {
+  cors: { origin: "*" },
+  transports: ["websocket"]
+});
+
+const db = new sqlite3.Database("./ballerrivals.db");
+
+db.run(`
+CREATE TABLE IF NOT EXISTS users(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ username TEXT UNIQUE,
+ password TEXT,
+ spins INTEGER DEFAULT 100,
+ pity INTEGER DEFAULT 0,
+ style TEXT DEFAULT 'MÜLLER'
+)
+`);
+
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+
+  const hash = await bcrypt.hash(password, 10);
+
+  db.run(
+    "INSERT INTO users(username,password) VALUES(?,?)",
+    [username, hash],
+    err => {
+      if (err) {
+        return res.status(400).json({
+          error: "Username existiert bereits"
+        });
+      }
+
+      res.json({
+        success: true
+      });
+    }
+  );
+});
+
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+
+  db.get(
+    "SELECT * FROM users WHERE username=?",
+    [username],
+    async (err, user) => {
+      if (!user) {
+        return res.status(404).json({
+          error: "Account nicht gefunden"
+        });
+      }
+
+      const ok = await bcrypt.compare(
+        password,
+        user.password
+      );
+
+      if (!ok) {
+        return res.status(401).json({
+          error: "Passwort falsch"
+        });
+      }
+
+      res.json({
+        username: user.username,
+        spins: user.spins,
+        pity: user.pity,
+        style: user.style
+      });
+    }
+  );
+});
+
+app.post("/savePlayer", (req, res) => {
+  const {
+    username,
+    spins,
+    pity,
+    style
+  } = req.body;
+
+  db.run(
+    "UPDATE users SET spins=?, pity=?, style=? WHERE username=?",
+    [spins, pity, style, username],
+    () => {
+      res.json({
+        saved: true
+      });
+    }
+  );
 });
 
 const rooms = {};
 
-io.on('connection', (socket) => {
-    console.log(`Spieler verbunden: ${socket.id}`);
+io.on("connection", socket => {
 
-   // 1. RAUM ERSTELLEN (Das steht schon bei dir drin)
-socket.on('createRoom', (roomCode) => {
-    rooms[roomCode] = { players: [socket.id] };
+  console.log(`Spieler verbunden: ${socket.id}`);
+
+  socket.on("createRoom", roomCode => {
+    rooms[roomCode] = {
+      players: [socket.id]
+    };
+
     socket.join(roomCode);
-    console.log(`Lobby ${roomCode} erstellt durch Spieler ${socket.id}.`);
+
+    console.log(`Lobby ${roomCode} erstellt`);
+  });
+
+  socket.on("playerMove", data => {
+    socket.to(data.roomCode).emit(
+      "enemyMove",
+      {
+        x: data.x,
+        z: data.z
+      }
+    );
+  });
+
+  socket.on("disconnect", () => {
+    console.log(
+      `Spieler getrennt: ${socket.id}`
+    );
+  });
 });
 
-// 2. RAUM BEITRETEN (Hier senden wir jetzt die IDs mit!)
-socket.on('joinRoom', (roomCode) => {
-    if (rooms[roomCode]) {
-        rooms[roomCode].players.push(socket.id);
-        socket.join(roomCode);
-        console.log(`Spieler ${socket.id} ist Lobby ${roomCode} beigetreten.`);
-        
-        // Sobald der zweite Spieler da ist, starten wir das Match
-        if (rooms[roomCode].players.length === 2) {
-            io.to(roomCode).emit('matchStart', {
-                player1: rooms[roomCode].players[0], // ID vom Ersteller
-                player2: rooms[roomCode].players[1]  // ID vom Beitretenden
-            });
-            console.log(`Match in Lobby ${roomCode} gestartet! IDs wurden gesendet.`);
-        }
-    } else {
-        socket.emit('errorMsg', 'Lobby nicht gefunden!');
-    }
-});
-    // ==========================================
-// MULTIPLAYER: GEGNER ZEICHNEN BEI MATCHSTART
-// ==========================================
+const PORT = process.env.PORT || 3000;
 
-// Dein Server sendet 'matchStart', also fangen wir genau das ab!
-socket.on('matchStart', () => {
-    console.log("Das Match startet! Erstelle die gegnerische Spielfigur...");
-    
-    // Prüfen, ob der Gegner nicht schon existiert
-    if (document.getElementById('enemy-player')) return;
-
-    let gegner = document.createElement('div');
-    gegner.id = 'enemy-player'; 
-    gegner.style.position = 'absolute';
-    
-    // Da der Server keine Position mitschickt, setzen wir ihn auf eine Startposition
-    gegner.style.left = '300px'; 
-    gegner.style.top = '300px';  
-    gegner.style.width = '50px';  
-    gegner.style.height = '50px';
-    gegner.style.background = 'red'; // Das rote Viereck
-    gegner.style.zIndex = '9999';   // Ganz nach oben legen
-    
-    document.body.appendChild(gegner);
-    console.log("Rote Gegner-Spielfigur wurde erfolgreich gezeichnet!");
-});
-
-    socket.on('playerMove', (data) => {
-        socket.to(data.roomCode).emit('enemyMove', { x: data.x, z: data.z });
-    });
-
-    socket.on('disconnect', () => {
-        console.log(`Spieler getrennt: ${socket.id}`);
-    });
-});
-
-server.listen(3000, () => {
-    console.log('--- SERVER READY ---');
-    console.log('Der Spieleserver läuft auf http://localhost:3000');
-});
-
-
-server.listen(3000, () => {
-    console.log('--- SERVER READY ---');
-    console.log('Der Spieleserver läuft auf http://localhost:3000');
+httpServer.listen(PORT, () => {
+  console.log(
+    `Server läuft auf Port ${PORT}`
+  );
 });
